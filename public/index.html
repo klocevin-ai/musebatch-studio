@@ -170,6 +170,47 @@
           </div>
         </div>
 
+        <!-- ==================== LIVE BATCH VIDEO MONITOR WALL ==================== -->
+        <div class="card live-monitor-section" id="liveMonitorSection">
+          <div class="monitor-head">
+            <div class="monitor-title-wrap">
+              <h3>📺 Theo dõi tiến trình &amp; Khung nhỏ video hàng loạt</h3>
+              <span class="live-counter-pill" id="liveActiveBadge">Chưa có video</span>
+            </div>
+
+            <div class="monitor-controls">
+              <div class="segmented" id="monitorFilterGroup">
+                <button data-filter="all" class="active">Tất cả</button>
+                <button data-filter="running">⚡ Đang tạo</button>
+                <button data-filter="completed">✅ Đã xong</button>
+                <button data-filter="pending">⏳ Chờ</button>
+                <button data-filter="failed">❌ Lỗi</button>
+              </div>
+
+              <select id="monitorGridSize" class="select-sm" title="Kích thước khung nhỏ">
+                <option value="compact">Khung nhỏ (5 cột)</option>
+                <option value="medium" selected>Khung vừa (4 cột)</option>
+                <option value="large">Khung lớn (3 cột)</option>
+              </select>
+
+              <label class="checkbox-row monitor-autoplay-toggle" title="Tự phát lặp không tiếng trên các khung video đã có hình">
+                <input type="checkbox" id="monitorAutoplay" checked />
+                <span>▶ Tự phát khung nhỏ</span>
+              </label>
+
+              <button class="btn btn-sm btn-ghost" id="btnToggleMonitorWall">Thu gọn</button>
+            </div>
+          </div>
+
+          <div id="liveMonitorBody">
+            <!-- Focused Spotlight Preview (click any mini-frame or auto-follows active render) -->
+            <div class="spotlight-panel hidden" id="spotlightPanel"></div>
+
+            <!-- Grid of Mini Live Video Frames -->
+            <div class="monitor-wall-grid size-medium" id="monitorWallGrid"></div>
+          </div>
+        </div>
+
         <!-- Queue List -->
         <div class="queue-header-bar">
           <h3>Danh sách video trong hàng đợi</h3>

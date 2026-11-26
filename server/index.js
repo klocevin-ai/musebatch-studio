@@ -11,6 +11,7 @@ import {
   FFPROBE_PATH,
   MUSE_PRESETS,
   OUTPUTS_DIR,
+  PREVIEWS_DIR,
   ROOT_DIR,
   TEMP_DIR,
   UPLOADS_DIR,
@@ -34,6 +35,7 @@ app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 app.use(express.static(path.join(ROOT_DIR, 'public')));
 app.use('/outputs', express.static(OUTPUTS_DIR));
 app.use('/uploads', express.static(UPLOADS_DIR));
+app.use('/previews', express.static(PREVIEWS_DIR, { etag: false, maxAge: 0 }));
 
 // Multer storage for persistent uploads (BGM, Watermark, Reference Images, Local Media)
 const diskStorage = multer.diskStorage({

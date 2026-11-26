@@ -383,6 +383,57 @@ function buildReframeFilter(width, height, fitMode, fps) {
 }
 
 /**
+ * Extract a fast crisp preview frame JPG from any intermediate or finished video clip.
+ */
+export async function extractPreviewFrame(videoPath, outputJpgPath, { timeSec = 0.8, signal } = {}) {
+  try {
+    fs.mkdirSync(path.dirname(outputJpgPath), { recursive: true });
+    await runProcess(
+      FFMPEG_PATH,
+      [
+        '-y',
+        '-ss',
+        String(Math.max(0, Number(timeSec) || 0).toFixed(2)),
+        '-i',
+        videoPath,
+        '-vframes',
+        '1',
+        '-vf',
+        'scale=480:-2',
+        '-q:v',
+        '5',
+        outputJpgPath
+      ],
+      { signal }
+    );
+    return fs.existsSync(outputJpgPath) ? outputJpgPath : null;
+  } catch {
+    // Retry at t=0 if clip shorter than timeSec
+    try {
+      await runProcess(
+        FFMPEG_PATH,
+        ['-y', '-i', videoPath, '-vframes', '1', '-vf', 'scale=480:-2', '-q:v', '5', outputJpgPath],
+        { signal }
+      );
+      return fs.existsSync(outputJpgPath) ? outputJpgPath : null;
+    } catch {
+      return null;
+    }
+  }
+}
+
+function parseFfmpegTimeSec(line) {
+  const m = /time=(\d{2}):(\d{2}):(\d{2}\.\d+)/.exec(line);
+  if (!m) return null;
+  return Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]);
+}
+
+function parseFfmpegSpeed(line) {
+  const m = /speed=\s*([\d.]+x)/.exec(line);
+  return m ? m[1] : null;
+}
+
+/**
  * Master FFmpeg post-production composer:
  * - Reframe to 9:16 / 16:9 / 1:1 (crop-fill or blurred-background)
  * - Sync video duration to voiceover duration (seamless loop if shorter, trim if longer)
@@ -404,6 +455,7 @@ export async function composeFinalVideo({
   audioConfig = {},
   watermarkConfig = {},
   targetDurationSec = null,
+  onProgress = null,
   signal
 }) {
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
@@ -580,7 +632,22 @@ export async function composeFinalVideo({
     outputPath
   );
 
-  await runProcess(FFMPEG_PATH, args, { signal });
+  let lastEmitTs = 0;
+  await runProcess(FFMPEG_PATH, args, {
+    signal,
+    onStderr: (chunk) => {
+      if (!onProgress || !finalDuration) return;
+      const t = parseFfmpegTimeSec(chunk);
+      if (t !== null) {
+        const now = Date.now();
+        if (now - lastEmitTs >= 320) {
+          lastEmitTs = now;
+          const ratio = Math.max(0, Math.min(1, t / finalDuration));
+          onProgress({ ratio, timeSec: t, totalSec: finalDuration, speed: parseFfmpegSpeed(chunk) });
+        }
+      }
+    }
+  });
 
   // Extract crisp thumbnail frame
   if (thumbnailPath) {

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { v4 as uuidv4 } from 'uuid';
-import { JOBS_FILE, OUTPUTS_DIR, TEMP_DIR, UPLOADS_DIR, loadSettings } from './config.js';
+import { JOBS_FILE, OUTPUTS_DIR, PREVIEWS_DIR, TEMP_DIR, UPLOADS_DIR, loadSettings } from './config.js';
 import { generateMuseVideoClip } from './museClient.js';
 import { synthesizeVoiceover } from './ttsEngine.js';
 import { generateAssSubtitles } from './subtitleEngine.js';
@@ -11,6 +11,7 @@ import {
   concatClipsWithTransitions,
   createDemoClip,
   createSlideshowFromImages,
+  extractPreviewFrame,
   probeMedia
 } from './ffmpegEngine.js';
 
@@ -114,8 +115,14 @@ export class BatchQueueManager extends EventEmitter {
         referenceImage: raw.referenceImage || '',
         mediaFiles: Array.isArray(raw.mediaFiles) ? raw.mediaFiles : [],
         status: 'pending', // 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+        stage: 'queued', // 'queued' | 'tts' | 'visual' | 'subtitles' | 'compose' | 'done' | 'failed' | 'cancelled'
         step: 'Đang chờ',
         progress: 0,
+        renderSpeed: null,
+        previewFrame: null,
+        previewClip: null,
+        previewVersion: 0,
+        startedAt: null,
         logs: [],
         error: null,
         outputFile: null,
@@ -172,9 +179,46 @@ export class BatchQueueManager extends EventEmitter {
       const fullThumb = path.join(OUTPUTS_DIR, path.basename(removed.thumbnailFile));
       if (fs.existsSync(fullThumb)) fs.rmSync(fullThumb, { force: true });
     }
+    this.cleanupPreviews(removed.id);
     this.saveJobs();
     this.emitUpdate('jobs_changed', this.getState());
     return true;
+  }
+
+  cleanupPreviews(jobId) {
+    for (const fname of [`preview_${jobId}.jpg`, `clip_${jobId}.mp4`]) {
+      const p = path.join(PREVIEWS_DIR, fname);
+      if (fs.existsSync(p)) {
+        try {
+          fs.rmSync(p, { force: true });
+        } catch {
+          // ignore
+        }
+      }
+    }
+  }
+
+  async publishLivePreview(job, videoPath, { copyClip = true, signal } = {}) {
+    if (!videoPath || !fs.existsSync(videoPath)) return;
+    const jpgName = `preview_${job.id}.jpg`;
+    const jpgPath = path.join(PREVIEWS_DIR, jpgName);
+    const extracted = await extractPreviewFrame(videoPath, jpgPath, { timeSec: 0.8, signal });
+    if (extracted) {
+      job.previewFrame = `/previews/${jpgName}`;
+      job.previewVersion = Date.now();
+    }
+    if (copyClip) {
+      try {
+        const clipName = `clip_${job.id}.mp4`;
+        const clipPath = path.join(PREVIEWS_DIR, clipName);
+        fs.copyFileSync(videoPath, clipPath);
+        job.previewClip = `/previews/${clipName}`;
+        job.previewVersion = Date.now();
+      } catch {
+        // optional intermediate clip
+      }
+    }
+    this.emitUpdate('job_updated', job);
   }
 
   retryJob(id) {
@@ -280,10 +324,22 @@ export class BatchQueueManager extends EventEmitter {
     this.activeControllers.set(job.id, controller);
 
     job.status = 'running';
+    job.stage = 'tts';
+    job.startedAt = Date.now();
+    job.renderSpeed = null;
+    job.previewClip = null;
     job.error = null;
     job.progress = 3;
     job.step = 'Khởi tạo pipeline...';
     job.logs = [];
+
+    // Seed initial preview frame from attached local image if present
+    const seedMedia = (job.mediaFiles || []).find(isImageFile) || (isImageFile(job.referenceImage) ? job.referenceImage : null);
+    if (seedMedia) {
+      job.previewFrame = /^https?:\/\//i.test(seedMedia) ? seedMedia : `/uploads/${path.basename(seedMedia)}`;
+      job.previewVersion = Date.now();
+    }
+
     this.logJob(job, 'Bắt đầu xử lý video...');
     this.saveJobs();
     this.emitUpdate('job_updated', job);
@@ -316,16 +372,26 @@ export class BatchQueueManager extends EventEmitter {
 
     if (controller.signal.aborted) {
       job.status = 'cancelled';
+      job.stage = 'cancelled';
       job.step = 'Đã hủy';
       job.error = 'Đã hủy bởi người dùng';
     } else if (lastError) {
       job.status = 'failed';
+      job.stage = 'failed';
       job.step = 'Thất bại';
       job.error = lastError.message;
     } else {
       job.status = 'completed';
+      job.stage = 'done';
       job.step = 'Hoàn tất!';
       job.progress = 100;
+      job.previewClip = null;
+      job.renderSpeed = null;
+      if (job.thumbnailFile) {
+        job.previewFrame = `/outputs/${job.thumbnailFile}`;
+        job.previewVersion = Date.now();
+      }
+      this.cleanupPreviews(job.id);
       job.completedAt = new Date().toISOString();
     }
 
@@ -334,12 +400,13 @@ export class BatchQueueManager extends EventEmitter {
     this.pumpQueue();
   }
 
-  logJob(job, msg, progress = null, step = null) {
+  logJob(job, msg, progress = null, step = null, stage = null) {
     const stamp = new Date().toLocaleTimeString('vi-VN', { hour12: false });
     job.logs.push(`[${stamp}] ${msg}`);
     if (job.logs.length > 80) job.logs.shift();
     if (progress !== null) job.progress = Math.min(99, Math.max(job.progress, progress));
     if (step !== null) job.step = step;
+    if (stage !== null) job.stage = stage;
     this.emitUpdate('job_updated', job);
   }
 
@@ -361,7 +428,7 @@ export class BatchQueueManager extends EventEmitter {
       const shouldTts = settings.tts?.enabled && job.script && job.script.trim().length > 0;
 
       if (shouldTts) {
-        this.logJob(job, `Tạo giọng đọc AI (${job.voice || settings.tts.voice})...`, 12, 'Đang tạo giọng đọc Edge-TTS...');
+        this.logJob(job, `Tạo giọng đọc AI (${job.voice || settings.tts.voice})...`, 12, 'Đang tạo giọng đọc AI...', 'tts');
         try {
           voiceResult = await synthesizeVoiceover({
             text: job.script,
@@ -373,13 +440,17 @@ export class BatchQueueManager extends EventEmitter {
           this.logJob(
             job,
             `Đã tạo giọng đọc (${(voiceResult.durationMs / 1000).toFixed(1)}s, ${voiceResult.wordTimings.length} từ có timestamp).`,
-            25
+            24,
+            null,
+            'tts'
           );
         } catch (ttsErr) {
           this.logJob(
             job,
             `Cảnh báo Edge-TTS lỗi (${ttsErr.message}). Tiếp tục render không có giọng đọc.`,
-            25
+            24,
+            null,
+            'tts'
           );
         }
       }
@@ -387,6 +458,7 @@ export class BatchQueueManager extends EventEmitter {
       if (signal.aborted) throw new Error('Đã hủy');
 
       // 2. Acquire base visual footage (Muse API / Local Media / Demo mode)
+      job.stage = 'visual';
       const rawVideoPath = path.join(workDir, 'base_video.mp4');
       const desiredVisualSec = voiceResult.durationMs
         ? Math.max(4, voiceResult.durationMs / 1000 + 0.5)
@@ -405,12 +477,13 @@ export class BatchQueueManager extends EventEmitter {
         for (let i = 0; i < scenePrompts.length; i++) {
           if (signal.aborted) throw new Error('Đã hủy');
           const clipOut = path.join(workDir, `muse_scene_${i}.mp4`);
-          const basePct = 28 + Math.round((i / scenePrompts.length) * 42);
+          const basePct = 26 + Math.round((i / scenePrompts.length) * 44);
           this.logJob(
             job,
             `Muse API: Tạo cảnh ${i + 1}/${scenePrompts.length}...`,
             basePct,
-            `Muse API đang tạo cảnh ${i + 1}/${scenePrompts.length}...`
+            `Muse API đang tạo cảnh ${i + 1}/${scenePrompts.length}...`,
+            'visual'
           );
 
           await generateMuseVideoClip({
@@ -426,12 +499,14 @@ export class BatchQueueManager extends EventEmitter {
           });
 
           generatedClips.push(clipOut);
+          // Immediately publish live visual frame & playable clip of scene just generated!
+          await this.publishLivePreview(job, clipOut, { copyClip: true, signal });
         }
 
         if (generatedClips.length === 1) {
           fs.copyFileSync(generatedClips[0], rawVideoPath);
         } else {
-          this.logJob(job, `Ghép ${generatedClips.length} cảnh với hiệu ứng chuyển cảnh (${transition})...`, 72, 'Đang ghép cảnh chuyển tiếp...');
+          this.logJob(job, `Ghép ${generatedClips.length} cảnh với hiệu ứng chuyển cảnh (${transition})...`, 72, 'Đang ghép cảnh chuyển tiếp...', 'visual');
           await concatClipsWithTransitions({
             clipPaths: generatedClips,
             outputPath: rawVideoPath,
@@ -442,6 +517,7 @@ export class BatchQueueManager extends EventEmitter {
             fitMode,
             signal
           });
+          await this.publishLivePreview(job, rawVideoPath, { copyClip: true, signal });
         }
       } else if (sourceMode === 'local_media') {
         const resolvedFiles = (job.mediaFiles || []).map(resolveUploadPath).filter(Boolean);
@@ -456,7 +532,7 @@ export class BatchQueueManager extends EventEmitter {
         const videos = resolvedFiles.filter(isVideoFile);
 
         if (videos.length > 0 && images.length === 0) {
-          this.logJob(job, `Ghép ${videos.length} video cục bộ (${transition})...`, 55, 'Đang ghép video cục bộ...');
+          this.logJob(job, `Ghép ${videos.length} video cục bộ (${transition})...`, 50, 'Đang ghép video cục bộ...', 'visual');
           await concatClipsWithTransitions({
             clipPaths: videos,
             outputPath: rawVideoPath,
@@ -472,8 +548,9 @@ export class BatchQueueManager extends EventEmitter {
           this.logJob(
             job,
             `Tạo slideshow Ken Burns từ ${allImgs.length} ảnh (${transition})...`,
-            55,
-            'Đang dựng Slideshow Ken Burns...'
+            50,
+            'Đang dựng Slideshow Ken Burns...',
+            'visual'
           );
           await createSlideshowFromImages({
             imagePaths: allImgs,
@@ -487,9 +564,10 @@ export class BatchQueueManager extends EventEmitter {
             signal
           });
         }
+        await this.publishLivePreview(job, rawVideoPath, { copyClip: true, signal });
       } else {
         // Demo / Offline test render mode
-        this.logJob(job, `Chế độ Demo Render: Tạo nền động ${aspectRatio} (${desiredVisualSec.toFixed(1)}s)...`, 55, 'Đang tạo nền Demo FFmpeg...');
+        this.logJob(job, `Chế độ Demo Render: Tạo nền động ${aspectRatio} (${desiredVisualSec.toFixed(1)}s)...`, 48, 'Đang tạo nền động Demo...', 'visual');
         const seed = parseInt(job.id.slice(0, 4), 16) || 1;
         await createDemoClip({
           outputPath: rawVideoPath,
@@ -499,6 +577,7 @@ export class BatchQueueManager extends EventEmitter {
           seed,
           signal
         });
+        await this.publishLivePreview(job, rawVideoPath, { copyClip: true, signal });
       }
 
       if (signal.aborted) throw new Error('Đã hủy');
@@ -514,7 +593,7 @@ export class BatchQueueManager extends EventEmitter {
       const hasHook = settings.subtitles?.showHookBanner && (job.hookText || job.title);
 
       if (hasSubScript || hasHook) {
-        this.logJob(job, `Tạo file phụ đề ASS kiểu "${settings.subtitles?.style || 'tiktok'}"...`, 78, 'Đang tạo phụ đề tự động...');
+        this.logJob(job, `Tạo file phụ đề ASS kiểu "${settings.subtitles?.style || 'tiktok'}"...`, 78, 'Đang tạo phụ đề tự động...', 'subtitles');
         assPath = path.join(workDir, 'subtitles.ass');
         generateAssSubtitles({
           outputPath: assPath,
@@ -531,7 +610,7 @@ export class BatchQueueManager extends EventEmitter {
       }
 
       // 4. Final FFmpeg composition (Reframe + Subtitles + Logo Watermark + Voiceover + BGM)
-      this.logJob(job, 'Hậu kỳ FFmpeg: Ghép âm thanh, nhạc nền, phụ đề & logo...', 85, 'Đang render video hoàn chỉnh...');
+      this.logJob(job, 'Hậu kỳ FFmpeg: Ghép âm thanh, nhạc nền, phụ đề & logo...', 82, 'FFmpeg đang render video...', 'compose');
 
       const baseName = `${sanitizeFilename(job.title)}_${job.id}`;
       const finalFilename = `${baseName}.mp4`;
@@ -556,13 +635,20 @@ export class BatchQueueManager extends EventEmitter {
         audioConfig: settings.audio,
         watermarkConfig: settings.watermark,
         targetDurationSec: voiceResult.audioPath ? null : targetDurSec,
+        onProgress: ({ ratio, timeSec, totalSec, speed }) => {
+          const pct = Math.min(98, Math.max(82, Math.round(82 + ratio * 16)));
+          job.progress = pct;
+          job.renderSpeed = speed || null;
+          job.step = `FFmpeg render ${timeSec.toFixed(1)}s/${totalSec.toFixed(1)}s${speed ? ` (${speed})` : ''}`;
+          this.emitUpdate('job_updated', job);
+        },
         signal
       });
 
       job.outputFile = finalFilename;
       job.thumbnailFile = composed.thumbnailPath ? thumbFilename : null;
       job.durationSec = composed.durationSec;
-      this.logJob(job, `Hoàn tất! File xuất: ${finalFilename} (${composed.durationSec}s)`, 99, 'Hoàn tất');
+      this.logJob(job, `Hoàn tất! File xuất: ${finalFilename} (${composed.durationSec}s)`, 99, 'Hoàn tất', 'done');
     } finally {
       // Clean temporary workspace for this job
       try {

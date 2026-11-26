@@ -6,7 +6,14 @@ const state = {
   queue: { isRunning: false, isPaused: false, activeCount: 0, jobs: [] },
   system: {},
   editingMediaFiles: [],
-  activeLogJobId: null
+  activeLogJobId: null,
+  monitorFilter: 'all',
+  monitorGridSize: 'medium',
+  monitorAutoplay: true,
+  monitorCollapsed: false,
+  spotlightJobId: null,
+  lastTileMediaSig: new Map(),
+  lastSpotlightMediaSig: ''
 };
 
 const $ = (id) => document.getElementById(id);
@@ -72,7 +79,11 @@ function connectSSE() {
         const idx = state.queue.jobs.findIndex((j) => j.id === updated.id);
         if (idx >= 0) state.queue.jobs[idx] = updated;
         else state.queue.jobs.push(updated);
-        renderAll();
+        // Auto-select Spotlight to first actively running video if nothing is pinned yet
+        if (updated.status === 'running' && !state.spotlightJobId) {
+          state.spotlightJobId = updated.id;
+        }
+        renderAll(updated);
         if (state.activeLogJobId === updated.id) {
           $('logsContent').textContent = (updated.logs || []).join('\n') || 'Chưa có log.';
         }
@@ -351,8 +362,423 @@ async function saveAllSettings(partial = null, silent = false) {
   if (!silent) toast('Đã lưu cấu hình thành công!', 'success');
 }
 
+/* ==================== LIVE BATCH MONITOR WALL ==================== */
+const PIPELINE_STAGES = [
+  { key: 'tts', icon: '🎙️', label: 'Giọng AI' },
+  { key: 'visual', icon: '🎬', label: 'Tạo hình' },
+  { key: 'subtitles', icon: '💬', label: 'Phụ đề' },
+  { key: 'compose', icon: '⚙️', label: 'Hậu kỳ' },
+  { key: 'done', icon: '✅', label: 'Hoàn tất' }
+];
+
+const STAGE_ORDER = { queued: -1, tts: 0, visual: 1, subtitles: 2, compose: 3, done: 4 };
+
+function formatElapsed(startedAt) {
+  if (!startedAt) return '';
+  const sec = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+  const m = String(Math.floor(sec / 60)).padStart(2, '0');
+  const s = String(sec % 60).padStart(2, '0');
+  return `${m}:${s}`;
+}
+
+function getRatioClass(ratio) {
+  if (ratio === '16:9') return 'ratio-16-9';
+  if (ratio === '1:1') return 'ratio-1-1';
+  return 'ratio-9-16';
+}
+
+function getJobMediaSignature(job) {
+  return [
+    job.status,
+    job.outputFile || '',
+    job.thumbnailFile || '',
+    job.previewClip || '',
+    job.previewFrame || '',
+    job.previewVersion || 0,
+    state.monitorAutoplay ? 'auto' : 'hover'
+  ].join('|');
+}
+
+function computeStageState(job, stepIdx) {
+  if (job.status === 'completed') return 'done';
+  if (job.status === 'pending') return 'idle';
+  const curIdx = STAGE_ORDER[job.stage] ?? 0;
+  if (job.status === 'failed' || job.status === 'cancelled') {
+    if (stepIdx < curIdx) return 'done';
+    if (stepIdx === curIdx) return 'failed';
+    return 'idle';
+  }
+  if (stepIdx < curIdx) return 'done';
+  if (stepIdx === curIdx) return 'active';
+  return 'idle';
+}
+
+function buildViewportMediaHtml(job, { isSpotlight = false } = {}) {
+  const pct = job.status === 'completed' ? 100 : job.progress || 0;
+  const ver = job.previewVersion ? `?v=${job.previewVersion}` : '';
+
+  // 1. Completed video -> playable inline MP4
+  if (job.status === 'completed' && job.outputFile) {
+    const mp4Url = `/outputs/${encodeURIComponent(job.outputFile)}`;
+    const posterAttr = job.thumbnailFile ? `poster="/outputs/${encodeURIComponent(job.thumbnailFile)}"` : '';
+    const autoAttr = isSpotlight || state.monitorAutoplay ? 'autoplay' : '';
+    const ctrlAttr = isSpotlight ? 'controls' : '';
+    return `<video src="${mp4Url}" ${posterAttr} ${ctrlAttr} ${autoAttr} muted loop playsinline preload="metadata"></video>`;
+  }
+
+  // 2. Running with intermediate live preview clip (e.g. Muse scene downloaded / Demo / Slideshow ready while FFmpeg composes)
+  if (job.status === 'running' && job.previewClip) {
+    const clipUrl = `${job.previewClip}${ver}`;
+    const posterAttr = job.previewFrame ? `poster="${job.previewFrame}${ver}"` : '';
+    const ctrlAttr = isSpotlight ? 'controls' : '';
+    return `
+      <video src="${clipUrl}" ${posterAttr} ${ctrlAttr} autoplay muted loop playsinline></video>
+      <div class="render-scanline"></div>
+    `;
+  }
+
+  // 3. Running with live extracted preview frame or reference image
+  if (job.previewFrame) {
+    return `
+      <img src="${job.previewFrame}${ver}" alt="${escapeHtml(job.title)}" />
+      ${job.status === 'running' ? '<div class="render-scanline"></div>' : ''}
+    `;
+  }
+
+  // 4. Running / Pending / Failed animated studio radar screen
+  const circ = 2 * Math.PI * 28;
+  const dashOffset = circ - (pct / 100) * circ;
+  const isPending = job.status === 'pending';
+  const promptPreview = job.prompt || job.script || job.title;
+
+  return `
+    <div class="render-radar ${isPending ? 'is-pending' : ''}">
+      ${
+        job.status === 'running'
+          ? `<div class="ring-wrap">
+               <svg viewBox="0 0 68 68">
+                 <circle class="ring-bg" cx="34" cy="34" r="28"></circle>
+                 <circle class="ring-fg" cx="34" cy="34" r="28" stroke-dasharray="${circ.toFixed(1)}" stroke-dashoffset="${dashOffset.toFixed(1)}"></circle>
+               </svg>
+               <span class="ring-pct" data-ring-pct>${pct}%</span>
+             </div>`
+          : `<div style="font-size:28px">${job.status === 'failed' ? '⚠️' : job.status === 'cancelled' ? '⏹️' : '🎞️'}</div>`
+      }
+      <div class="radar-prompt">${escapeHtml(promptPreview)}</div>
+    </div>
+    ${job.status === 'running' ? '<div class="render-scanline"></div>' : ''}
+  `;
+}
+
+function renderSpotlight(jobs) {
+  const panel = $('spotlightPanel');
+  if (!state.spotlightJobId) {
+    panel.classList.add('hidden');
+    state.lastSpotlightMediaSig = '';
+    return;
+  }
+
+  const jobIdx = jobs.findIndex((j) => j.id === state.spotlightJobId);
+  if (jobIdx < 0) {
+    state.spotlightJobId = null;
+    panel.classList.add('hidden');
+    state.lastSpotlightMediaSig = '';
+    return;
+  }
+
+  const job = jobs[jobIdx];
+  const effRatio = job.aspectRatio || state.settings?.production?.aspectRatio || '9:16';
+  const pct = job.status === 'completed' ? 100 : job.progress || 0;
+  const mediaSig = `spot|${job.id}|${getJobMediaSignature(job)}|${effRatio}`;
+  const isMounted = panel.dataset.jobId === job.id && !panel.classList.contains('hidden');
+
+  panel.classList.remove('hidden');
+
+  // If same job & same visual media source -> smoothly patch progress/stages/logs without reloading <video>!
+  if (isMounted && state.lastSpotlightMediaSig === mediaSig) {
+    const bar = panel.querySelector('[data-spot-bar]');
+    if (bar) bar.style.width = `${pct}%`;
+    const pctEl = panel.querySelector('[data-spot-pct]');
+    if (pctEl) pctEl.textContent = `${pct}%`;
+    const stepEl = panel.querySelector('[data-spot-step]');
+    if (stepEl) stepEl.textContent = job.step || '';
+    const ringPct = panel.querySelector('[data-ring-pct]');
+    if (ringPct) ringPct.textContent = `${pct}%`;
+    const ringFg = panel.querySelector('.ring-fg');
+    if (ringFg) {
+      const circ = 2 * Math.PI * 28;
+      ringFg.setAttribute('stroke-dashoffset', (circ - (pct / 100) * circ).toFixed(1));
+    }
+    const speedEl = panel.querySelector('[data-spot-speed]');
+    if (speedEl) {
+      speedEl.textContent = job.renderSpeed ? `⚡ ${job.renderSpeed}` : '';
+      speedEl.classList.toggle('hidden', !job.renderSpeed);
+    }
+    panel.querySelectorAll('.stage-step').forEach((el, i) => {
+      el.className = `stage-step ${computeStageState(job, i)}`;
+    });
+    const logsEl = panel.querySelector('.spotlight-logs');
+    if (logsEl) {
+      const text = (job.logs || []).join('\n') || 'Chưa bắt đầu xử lý.';
+      if (logsEl.textContent !== text) {
+        logsEl.textContent = text;
+        logsEl.scrollTop = logsEl.scrollHeight;
+      }
+    }
+    return;
+  }
+
+  panel.dataset.jobId = job.id;
+  state.lastSpotlightMediaSig = mediaSig;
+
+  const badgeLabel =
+    job.status === 'running'
+      ? job.previewClip
+        ? '● XEM TRƯỚC TRỰC TIẾP (ĐANG HẬU KỲ)'
+        : '● ĐANG TẠO VIDEO'
+      : job.status === 'completed'
+        ? '✓ VIDEO HOÀN CHỈNH'
+        : STATUS_LABELS[job.status] || job.status;
+
+  const badgeClass =
+    job.status === 'running' ? 'live' : job.status === 'completed' ? 'done' : job.status === 'failed' ? 'err' : '';
+
+  const stagesHtml = PIPELINE_STAGES.map((st, idx) => {
+    const cls = computeStageState(job, idx);
+    return `<div class="stage-step ${cls}"><span class="st-ico">${st.icon}</span><span>${st.label}</span></div>`;
+  }).join('');
+
+  panel.innerHTML = `
+    <div class="spotlight-screen ${getRatioClass(effRatio)}">
+      ${buildViewportMediaHtml(job, { isSpotlight: true })}
+      <div class="tile-overlay-top">
+        <span class="tile-chip ${badgeClass}">${badgeLabel}</span>
+        <span class="tile-chip">${escapeHtml(effRatio)}</span>
+      </div>
+    </div>
+
+    <div class="spotlight-info">
+      <div class="spotlight-head">
+        <div>
+          <div class="spotlight-title">#${jobIdx + 1} — ${escapeHtml(job.title)}</div>
+          <div class="spotlight-badges">
+            <span class="status-pill ${job.status}">${STATUS_LABELS[job.status] || job.status}</span>
+            ${job.status === 'running' && job.startedAt ? `<span class="tag-chip" data-elapsed-for="${job.id}">⏱️ ${formatElapsed(job.startedAt)}</span>` : ''}
+            ${job.durationSec ? `<span class="tag-chip">🎞️ ${job.durationSec}s</span>` : ''}
+            <span class="tag-chip ${job.renderSpeed ? '' : 'hidden'}" data-spot-speed>⚡ ${escapeHtml(job.renderSpeed || '')}</span>
+          </div>
+        </div>
+        <button class="icon-btn" id="btnCloseSpotlight" title="Đóng khung xem lớn">✕</button>
+      </div>
+
+      <div class="stage-stepper">${stagesHtml}</div>
+
+      <div class="spotlight-progress-box">
+        <div class="spotlight-progress-head">
+          <span data-spot-step>${escapeHtml(job.step || 'Đang chờ')}</span>
+          <strong data-spot-pct>${pct}%</strong>
+        </div>
+        <div class="progress-track">
+          <div class="progress-fill" data-spot-bar style="width: ${pct}%"></div>
+        </div>
+        ${job.error ? `<div class="job-error-box">❌ ${escapeHtml(job.error)}</div>` : ''}
+      </div>
+
+      <div class="spotlight-logs">${escapeHtml((job.logs || []).join('\n') || 'Video đang trong hàng đợi, bấm "▶ Chạy hàng loạt" để theo dõi trực tiếp tại đây.')}</div>
+
+      <div class="spotlight-actions">
+        ${
+          job.status === 'completed' && job.outputFile
+            ? `<button class="btn btn-sm btn-primary" data-action="play" data-id="${job.id}">▶ Phóng to có âm thanh</button>
+               <a class="btn btn-sm btn-secondary" href="/outputs/${encodeURIComponent(job.outputFile)}" download>⬇ Tải MP4</a>`
+            : ''
+        }
+        ${job.status !== 'running' ? `<button class="btn btn-sm btn-secondary" data-action="retry" data-id="${job.id}">↻ Chạy lại</button>` : ''}
+        <button class="btn btn-sm btn-ghost" data-action="edit" data-id="${job.id}">✏️ Sửa nội dung</button>
+      </div>
+    </div>
+  `;
+
+  const logsEl = panel.querySelector('.spotlight-logs');
+  if (logsEl) logsEl.scrollTop = logsEl.scrollHeight;
+  const closeBtn = panel.querySelector('#btnCloseSpotlight');
+  if (closeBtn) {
+    closeBtn.addEventListener('click', () => {
+      state.spotlightJobId = null;
+      renderSpotlight(state.queue.jobs);
+      renderMonitorWall(state.queue.jobs, true);
+    });
+  }
+}
+
+function renderMonitorWall(jobs, forceRebuild = false) {
+  const runningCount = jobs.filter((j) => j.status === 'running').length;
+  const doneCount = jobs.filter((j) => j.status === 'completed').length;
+  const badge = $('liveActiveBadge');
+
+  if (runningCount > 0) {
+    badge.className = 'live-counter-pill is-live';
+    badge.textContent = `Đang tạo trực tiếp ${runningCount} video (${doneCount}/${jobs.length} xong)`;
+  } else if (jobs.length > 0) {
+    badge.className = 'live-counter-pill';
+    badge.textContent = `${doneCount}/${jobs.length} video hoàn thành`;
+  } else {
+    badge.className = 'live-counter-pill';
+    badge.textContent = 'Chưa có video';
+  }
+
+  const grid = $('monitorWallGrid');
+  grid.className = `monitor-wall-grid size-${state.monitorGridSize}`;
+
+  const filtered = jobs.filter((j) => {
+    if (state.monitorFilter === 'all') return true;
+    return j.status === state.monitorFilter;
+  });
+
+  if (!filtered.length) {
+    state.lastTileMediaSig.clear();
+    grid.innerHTML = `
+      <div class="empty-state" style="grid-column: 1 / -1; padding: 30px 16px;">
+        <p>${jobs.length ? 'Không có video nào khớp bộ lọc này.' : 'Thêm video hoặc bấm <strong>⚡ Nạp 3 mẫu thử</strong> để các khung nhỏ video hàng loạt hiện ra tại đây!'}</p>
+      </div>`;
+    renderSpotlight(jobs);
+    return;
+  }
+
+  // Check if structural list of visible tiles matches DOM so we can patch in-place without flickering <video>!
+  const existingTiles = Array.from(grid.querySelectorAll('.monitor-tile'));
+  const existingIds = existingTiles.map((t) => t.dataset.jobId);
+  const nextIds = filtered.map((j) => j.id);
+  const sameOrder =
+    !forceRebuild &&
+    existingIds.length === nextIds.length &&
+    existingIds.every((id, i) => id === nextIds[i]);
+
+  if (sameOrder) {
+    filtered.forEach((job, idx) => {
+      const tile = existingTiles[idx];
+      const effRatio = job.aspectRatio || state.settings?.production?.aspectRatio || '9:16';
+      const pct = job.status === 'completed' ? 100 : job.progress || 0;
+      const sig = `${getJobMediaSignature(job)}|${effRatio}`;
+
+      tile.className = `monitor-tile status-${job.status} ${state.spotlightJobId === job.id ? 'is-selected' : ''}`;
+
+      // Rebuild viewport ONLY if visual source / status changed
+      if (state.lastTileMediaSig.get(job.id) !== sig) {
+        state.lastTileMediaSig.set(job.id, sig);
+        const vp = tile.querySelector('.tile-viewport');
+        if (vp) {
+          vp.className = `tile-viewport ${getRatioClass(effRatio)}`;
+          vp.innerHTML = buildTileInnerViewportHtml(job, jobs.indexOf(job), effRatio);
+        }
+        const footerActions = tile.querySelector('.tile-mini-actions');
+        if (footerActions) footerActions.innerHTML = buildTileActionsHtml(job);
+      } else {
+        // Lightweight live progress patch (zero video interruption!)
+        const bar = tile.querySelector('.tile-bar-fill');
+        if (bar) bar.style.width = `${pct}%`;
+        const stepEl = tile.querySelector('.tile-step-text');
+        if (stepEl) stepEl.textContent = job.step || '';
+        const pctChip = tile.querySelector('[data-tile-status-chip]');
+        if (pctChip && job.status === 'running') pctChip.textContent = `● ${pct}%`;
+        const ringPct = tile.querySelector('[data-ring-pct]');
+        if (ringPct) ringPct.textContent = `${pct}%`;
+        const ringFg = tile.querySelector('.ring-fg');
+        if (ringFg) {
+          const circ = 2 * Math.PI * 28;
+          ringFg.setAttribute('stroke-dashoffset', (circ - (pct / 100) * circ).toFixed(1));
+        }
+        tile.querySelectorAll('.tile-dot').forEach((dot, dIdx) => {
+          dot.className = `tile-dot ${computeStageState(job, dIdx)}`;
+        });
+      }
+    });
+  } else {
+    state.lastTileMediaSig.clear();
+    grid.innerHTML = filtered
+      .map((job) => {
+        const globalIdx = jobs.indexOf(job);
+        const effRatio = job.aspectRatio || state.settings?.production?.aspectRatio || '9:16';
+        state.lastTileMediaSig.set(job.id, `${getJobMediaSignature(job)}|${effRatio}`);
+        return `
+          <div class="monitor-tile status-${job.status} ${state.spotlightJobId === job.id ? 'is-selected' : ''}" data-job-id="${job.id}">
+            <div class="tile-viewport ${getRatioClass(effRatio)}">
+              ${buildTileInnerViewportHtml(job, globalIdx, effRatio)}
+            </div>
+            <div class="tile-footer">
+              <div class="tile-title" title="${escapeHtml(job.title)}">#${globalIdx + 1} ${escapeHtml(job.title)}</div>
+              <div class="tile-mini-actions">${buildTileActionsHtml(job)}</div>
+            </div>
+          </div>`;
+      })
+      .join('');
+  }
+
+  renderSpotlight(jobs);
+}
+
+function buildTileInnerViewportHtml(job, globalIdx, effRatio) {
+  const pct = job.status === 'completed' ? 100 : job.progress || 0;
+  const statusChipClass =
+    job.status === 'running' ? 'live' : job.status === 'completed' ? 'done' : job.status === 'failed' ? 'err' : '';
+  const statusChipText =
+    job.status === 'running'
+      ? `● ${pct}%`
+      : job.status === 'completed'
+        ? '✓ XONG'
+        : job.status === 'failed'
+          ? '✕ LỖI'
+          : `#${globalIdx + 1} CHỜ`;
+
+  const rightChipText =
+    job.status === 'running' && job.startedAt
+      ? `<span class="tile-chip" data-elapsed-for="${job.id}">${formatElapsed(job.startedAt)}</span>`
+      : job.durationSec
+        ? `<span class="tile-chip">${job.durationSec}s</span>`
+        : `<span class="tile-chip">${escapeHtml(effRatio)}</span>`;
+
+  const dotsHtml = PIPELINE_STAGES.map((_, idx) => `<span class="tile-dot ${computeStageState(job, idx)}"></span>`).join('');
+
+  return `
+    ${buildViewportMediaHtml(job, { isSpotlight: false })}
+    <div class="tile-overlay-top">
+      <span class="tile-chip ${statusChipClass}" data-tile-status-chip>${statusChipText}</span>
+      ${rightChipText}
+    </div>
+    <div class="tile-overlay-bottom">
+      <div class="tile-dots">${dotsHtml}</div>
+      <div class="tile-step-text">${escapeHtml(job.step || 'Đang chờ')}</div>
+      <div class="tile-bar-track"><div class="tile-bar-fill" style="width:${pct}%"></div></div>
+    </div>
+  `;
+}
+
+function buildTileActionsHtml(job) {
+  let html = `<button class="tile-mini-btn" data-action="spotlight" data-id="${job.id}" title="Xem chi tiết tiến trình">👁️</button>`;
+  if (job.status === 'completed' && job.outputFile) {
+    html += `<button class="tile-mini-btn" data-action="play" data-id="${job.id}" title="Phóng to có âm thanh">▶</button>`;
+    html += `<a class="tile-mini-btn" href="/outputs/${encodeURIComponent(job.outputFile)}" download title="Tải MP4">⬇</a>`;
+  } else if (job.status === 'failed' || job.status === 'cancelled') {
+    html += `<button class="tile-mini-btn" data-action="retry" data-id="${job.id}" title="Chạy lại">↻</button>`;
+  }
+  return html;
+}
+
+// 1-second lightweight live timer for active rendering jobs
+setInterval(() => {
+  const jobs = state.queue.jobs || [];
+  for (const job of jobs) {
+    if (job.status === 'running' && job.startedAt) {
+      const formatted = formatElapsed(job.startedAt);
+      document.querySelectorAll(`[data-elapsed-for="${job.id}"]`).forEach((el) => {
+        el.textContent = el.classList.contains('tag-chip') ? `⏱️ ${formatted}` : formatted;
+      });
+    }
+  }
+}, 1000);
+
 /* ==================== RENDER QUEUE & GALLERY ==================== */
-function renderAll() {
+function renderAll(updatedJob = null) {
   const jobs = state.queue.jobs || [];
   const total = jobs.length;
   const pending = jobs.filter((j) => j.status === 'pending').length;
@@ -395,6 +821,7 @@ function renderAll() {
     $('masterProgressWrap').classList.add('hidden');
   }
 
+  renderMonitorWall(jobs, !updatedJob);
   renderJobsList(jobs);
   renderGallery(jobs.filter((j) => j.status === 'completed' && j.outputFile));
 }
@@ -867,7 +1294,11 @@ function bindEvents() {
     const target = e.target.closest('[data-action]');
     if (!target) return;
     const { action, id } = target.dataset;
-    if (action === 'play') openPlayer(id);
+    if (action === 'spotlight') {
+      state.spotlightJobId = id;
+      renderMonitorWall(state.queue.jobs, false);
+      $('spotlightPanel').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    } else if (action === 'play') openPlayer(id);
     else if (action === 'logs') openLogs(id);
     else if (action === 'edit') {
       const job = state.queue.jobs.find((j) => j.id === id);
@@ -1047,6 +1478,71 @@ function bindEvents() {
 
   // Save All Settings
   $('btnSaveSettings').addEventListener('click', () => saveAllSettings());
+
+  // Live Monitor Wall Controls
+  document.querySelectorAll('#monitorFilterGroup button').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('#monitorFilterGroup button').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      state.monitorFilter = btn.dataset.filter;
+      renderMonitorWall(state.queue.jobs, true);
+    });
+  });
+
+  $('monitorGridSize').addEventListener('change', (e) => {
+    state.monitorGridSize = e.target.value;
+    $('monitorWallGrid').className = `monitor-wall-grid size-${state.monitorGridSize}`;
+  });
+
+  $('monitorAutoplay').addEventListener('change', (e) => {
+    state.monitorAutoplay = e.target.checked;
+    renderMonitorWall(state.queue.jobs, true);
+  });
+
+  $('btnToggleMonitorWall').addEventListener('click', () => {
+    state.monitorCollapsed = !state.monitorCollapsed;
+    $('liveMonitorBody').classList.toggle('hidden', state.monitorCollapsed);
+    $('btnToggleMonitorWall').textContent = state.monitorCollapsed ? 'Mở rộng' : 'Thu gọn';
+  });
+
+  // Clicking a mini-frame selects it in Spotlight; hover plays muted preview if autoplay is OFF
+  $('monitorWallGrid').addEventListener('click', (e) => {
+    if (e.target.closest('[data-action]') || e.target.closest('a')) return;
+    const tile = e.target.closest('.monitor-tile');
+    if (!tile) return;
+    state.spotlightJobId = tile.dataset.jobId;
+    renderMonitorWall(state.queue.jobs, false);
+    $('spotlightPanel').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  });
+
+  $('monitorWallGrid').addEventListener('dblclick', (e) => {
+    const tile = e.target.closest('.monitor-tile');
+    if (!tile) return;
+    const job = state.queue.jobs.find((j) => j.id === tile.dataset.jobId);
+    if (job?.status === 'completed' && job.outputFile) openPlayer(job.id);
+  });
+
+  $('monitorWallGrid').addEventListener(
+    'mouseenter',
+    (e) => {
+      if (state.monitorAutoplay) return;
+      const tile = e.target.closest('.monitor-tile');
+      const vid = tile?.querySelector('video');
+      if (vid) vid.play().catch(() => {});
+    },
+    true
+  );
+
+  $('monitorWallGrid').addEventListener(
+    'mouseleave',
+    (e) => {
+      if (state.monitorAutoplay) return;
+      const tile = e.target.closest('.monitor-tile');
+      const vid = tile?.querySelector('video');
+      if (vid) vid.pause();
+    },
+    true
+  );
 }
 
 init().catch((err) => {

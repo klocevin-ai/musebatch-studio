@@ -10,11 +10,12 @@ export const ROOT_DIR = path.resolve(__dirname, '..');
 export const DATA_DIR = path.join(ROOT_DIR, 'data');
 export const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
 export const OUTPUTS_DIR = path.join(DATA_DIR, 'outputs');
+export const PREVIEWS_DIR = path.join(DATA_DIR, 'previews');
 export const TEMP_DIR = path.join(DATA_DIR, 'temp');
 export const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
 export const JOBS_FILE = path.join(DATA_DIR, 'jobs.json');
 
-for (const dir of [DATA_DIR, UPLOADS_DIR, OUTPUTS_DIR, TEMP_DIR]) {
+for (const dir of [DATA_DIR, UPLOADS_DIR, OUTPUTS_DIR, PREVIEWS_DIR, TEMP_DIR]) {
   fs.mkdirSync(dir, { recursive: true });
 }
 

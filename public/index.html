@@ -1,0 +1,823 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MuseBatch Studio — Tạo Video AI Hàng Loạt</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <!-- Top Studio Header -->
+    <header class="topbar">
+      <div class="topbar-left">
+        <div class="brand">
+          <div class="brand-icon">▶</div>
+          <div>
+            <div class="brand-name">MuseBatch <span>Studio</span></div>
+            <div class="brand-sub">Tạo Video Hàng Loạt • Muse API + Edge-TTS + FFmpeg</div>
+          </div>
+        </div>
+        <nav class="main-nav" role="tablist">
+          <button class="nav-tab active" data-tab="queue">
+            <span class="nav-ico">⚡</span> Hàng đợi <span class="badge" id="navQueueCount">0</span>
+          </button>
+          <button class="nav-tab" data-tab="settings">
+            <span class="nav-ico">🎛️</span> Cài đặt API &amp; Hậu kỳ
+          </button>
+          <button class="nav-tab" data-tab="gallery">
+            <span class="nav-ico">🎬</span> Video đã xuất <span class="badge badge-success" id="navDoneCount">0</span>
+          </button>
+        </nav>
+      </div>
+
+      <div class="topbar-right">
+        <button class="pill-status" id="apiKeyStatusPill" title="Bấm để cấu hình Muse API Key">
+          <span class="dot"></span>
+          <span id="apiKeyStatusText">Chưa có Muse API Key</span>
+        </button>
+
+        <div class="queue-cta-group">
+          <button class="btn btn-primary" id="btnStartQueue">▶ Chạy hàng loạt</button>
+          <button class="btn btn-warning hidden" id="btnPauseQueue">⏸ Tạm dừng</button>
+          <button class="btn btn-primary hidden" id="btnResumeQueue">▶ Tiếp tục</button>
+          <button class="btn btn-danger hidden" id="btnStopQueue">⏹ Dừng</button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Content Area -->
+    <main class="main-content">
+
+      <!-- ==================== TAB 1: QUEUE & BATCH CREATOR ==================== -->
+      <section class="tab-panel active" id="tab-queue">
+        <!-- Quick 3-Step Guide Banner -->
+        <div class="guide-banner" id="guideBanner">
+          <div class="guide-header">
+            <div>
+              <h2>🚀 Quy trình tạo video hàng loạt chỉ với 3 bước</h2>
+              <p>Hỗ trợ đầy đủ Muse API (Text-to-Video &amp; Image-to-Video), Ảnh/Video cục bộ, Giọng đọc AI tiếng Việt, Phụ đề TikTok, Nhạc nền &amp; Logo.</p>
+            </div>
+            <button class="icon-btn" id="btnCloseGuide" title="Ẩn hướng dẫn">✕</button>
+          </div>
+          <div class="guide-steps">
+            <div class="guide-step">
+              <div class="step-num">1</div>
+              <div>
+                <strong>Dán Muse API Key</strong>
+                <p>Chọn nền tảng API của bạn &amp; kiểm tra kết nối, hoặc dùng chế độ <em>Demo / Ảnh cục bộ</em> miễn phí.</p>
+                <button class="btn btn-sm btn-secondary" id="btnGoApiSetup">Mở cài đặt API →</button>
+              </div>
+            </div>
+            <div class="guide-step">
+              <div class="step-num">2</div>
+              <div>
+                <strong>Nạp danh sách kịch bản</strong>
+                <p>Nhập file CSV/Excel, dán hàng loạt mỗi dòng 1 video, hoặc nạp sẵn 3 kịch bản mẫu để chạy thử ngay.</p>
+                <button class="btn btn-sm btn-secondary" id="btnLoadSamplesQuick">⚡ Nạp 3 video mẫu</button>
+              </div>
+            </div>
+            <div class="guide-step">
+              <div class="step-num">3</div>
+              <div>
+                <strong>Bấm Chạy hàng loạt</strong>
+                <p>Hệ thống tự chạy đa luồng: gọi Muse API → tạo giọng đọc → đốt phụ đề nổi bật → ghép nhạc &amp; xuất MP4/ZIP.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Quick Controls Bar -->
+        <div class="card toolbar-card">
+          <div class="toolbar-row">
+            <div class="toolbar-group">
+              <label class="inline-label">Nguồn hình ảnh:</label>
+              <div class="segmented" id="quickSourceMode">
+                <button data-value="muse" class="active" title="Gọi API Muse tạo video AI từ prompt">🤖 Muse API</button>
+                <button data-value="local_media" title="Dựng video Ken Burns / ghép clip từ ảnh hoặc video có sẵn">🖼️ Ảnh/Clip cục bộ</button>
+                <button data-value="demo" title="Tạo nền động FFmpeg để test toàn bộ giọng đọc + phụ đề + nhạc nền miễn phí">🎨 Demo Render</button>
+              </div>
+            </div>
+
+            <div class="toolbar-group">
+              <label class="inline-label">Tỷ lệ:</label>
+              <select id="quickAspectRatio" class="select-sm">
+                <option value="9:16">9:16 (TikTok / Shorts / Reels)</option>
+                <option value="16:9">16:9 (YouTube ngang)</option>
+                <option value="1:1">1:1 (Vuông FB / IG)</option>
+              </select>
+            </div>
+
+            <div class="toolbar-group">
+              <label class="inline-label">Luồng song song:</label>
+              <select id="quickConcurrency" class="select-sm">
+                <option value="1">1 luồng</option>
+                <option value="2">2 luồng</option>
+                <option value="3">3 luồng</option>
+                <option value="4">4 luồng</option>
+                <option value="5">5 luồng</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="toolbar-divider"></div>
+
+          <div class="toolbar-actions">
+            <button class="btn btn-primary" id="btnAddSingle">+ Thêm 1 video</button>
+            <button class="btn btn-secondary" id="btnBulkPaste">📋 Dán hàng loạt</button>
+            <label class="btn btn-secondary file-btn">
+              📂 Nhập CSV / Excel / TXT
+              <input type="file" id="importBatchFile" accept=".csv,.xlsx,.xls,.txt" hidden />
+            </label>
+            <a class="btn btn-ghost" href="/api/template.csv" download>⬇ Tải file mẫu CSV</a>
+            <button class="btn btn-accent" id="btnOpenAiGenerator">✨ AI tạo kịch bản hàng loạt</button>
+            <button class="btn btn-ghost" id="btnLoadSamples">⚡ Nạp 3 mẫu thử</button>
+          </div>
+        </div>
+
+        <!-- Batch KPI Stats & Master Progress -->
+        <div class="stats-grid">
+          <div class="stat-card">
+            <div class="stat-label">Tổng hàng đợi</div>
+            <div class="stat-val" id="statTotal">0</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Đang chờ</div>
+            <div class="stat-val text-muted" id="statPending">0</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Đang xử lý</div>
+            <div class="stat-val text-info" id="statRunning">0</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Hoàn thành</div>
+            <div class="stat-val text-success" id="statCompleted">0</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Thất bại</div>
+            <div class="stat-val text-danger" id="statFailed">0</div>
+          </div>
+        </div>
+
+        <!-- Overall Progress Bar -->
+        <div class="master-progress-wrap hidden" id="masterProgressWrap">
+          <div class="master-progress-head">
+            <span id="masterProgressText">Đang xử lý hàng loạt...</span>
+            <span id="masterProgressPct">0%</span>
+          </div>
+          <div class="progress-track lg">
+            <div class="progress-fill" id="masterProgressBar" style="width: 0%"></div>
+          </div>
+        </div>
+
+        <!-- Queue List -->
+        <div class="queue-header-bar">
+          <h3>Danh sách video trong hàng đợi</h3>
+          <div class="queue-bulk-ops">
+            <button class="btn btn-sm btn-ghost" id="btnRetryFailed">↻ Chạy lại video lỗi</button>
+            <button class="btn btn-sm btn-ghost" id="btnClearCompleted">🧹 Dọn video đã xong</button>
+            <button class="btn btn-sm btn-ghost text-danger" id="btnClearAll">🗑 Xóa tất cả</button>
+            <button class="btn btn-sm btn-secondary" id="btnDownloadZip">📦 Tải tất cả (.ZIP)</button>
+            <button class="btn btn-sm btn-secondary" id="btnOpenOutputs">📁 Mở thư mục Output</button>
+          </div>
+        </div>
+
+        <div id="jobsList" class="jobs-list">
+          <!-- Dynamically rendered job cards -->
+        </div>
+      </section>
+
+      <!-- ==================== TAB 2: SETTINGS (API + POST-PRODUCTION) ==================== -->
+      <section class="tab-panel" id="tab-settings">
+        <div class="settings-grid">
+
+          <!-- 1. Muse API Configuration -->
+          <div class="card settings-card span-2">
+            <div class="card-head">
+              <div>
+                <h3>🔑 1. Kết nối Muse API (Tạo Video AI)</h3>
+                <p>Hỗ trợ MuseVideos, Muse AI Pro, Gateway /v1/videos (APIMart, APIMODELS, LaoZhang) hoặc mọi REST API tùy chỉnh.</p>
+              </div>
+              <button class="btn btn-secondary" id="btnTestMuse">🔌 Kiểm tra kết nối &amp; Tải Models</button>
+            </div>
+
+            <div id="museTestResult" class="alert hidden"></div>
+
+            <div class="form-grid cols-2">
+              <div class="field">
+                <label>Chọn nền tảng API (Preset)</label>
+                <select id="cfgMusePreset"></select>
+                <small id="cfgMusePresetNote" class="hint"></small>
+              </div>
+
+              <div class="field">
+                <label>Muse API Key <span class="badge-inline" id="cfgMuseKeyBadge">Chưa lưu</span></label>
+                <div class="input-with-btn">
+                  <input type="password" id="cfgMuseApiKey" placeholder="Dán API Key của bạn (vd: sk-...)" autocomplete="off" />
+                  <button type="button" class="btn btn-sm btn-ghost" id="btnToggleMuseKey">👁️</button>
+                </div>
+                <small class="hint">Key chỉ lưu cục bộ trên máy của bạn trong <code>data/settings.json</code>.</small>
+              </div>
+
+              <div class="field">
+                <label>Base URL</label>
+                <input type="text" id="cfgMuseBaseUrl" placeholder="https://musevideos.io/api/v1" />
+              </div>
+
+              <div class="field">
+                <label>Model tạo video</label>
+                <div class="input-with-btn">
+                  <input type="text" id="cfgMuseModel" list="museModelsDatalist" placeholder="vd: veo-3.1-fast hoặc muse-video" />
+                  <datalist id="museModelsDatalist">
+                    <option value="veo-3.1-fast"></option>
+                    <option value="veo-3.1"></option>
+                    <option value="muse-video"></option>
+                    <option value="muse-video-ext"></option>
+                    <option value="kling-2.1"></option>
+                    <option value="seedance-1.0"></option>
+                    <option value="wan-2.2"></option>
+                  </datalist>
+                </div>
+                <small class="hint">Có thể gõ trực tiếp hoặc bấm "Kiểm tra kết nối" để tự tải danh sách model.</small>
+              </div>
+
+              <div class="field">
+                <label>Thời lượng mỗi clip AI (giây)</label>
+                <select id="cfgMuseDuration">
+                  <option value="5">5 giây</option>
+                  <option value="6">6 giây</option>
+                  <option value="8">8 giây</option>
+                  <option value="10">10 giây</option>
+                  <option value="15">15 giây</option>
+                  <option value="20">20 giây</option>
+                </select>
+              </div>
+
+              <div class="field">
+                <label>Độ phân giải gọi API</label>
+                <select id="cfgMuseResolution">
+                  <option value="720p">720p (Nhanh &amp; tiết kiệm)</option>
+                  <option value="1080p">1080p (Full HD)</option>
+                </select>
+              </div>
+            </div>
+
+            <details class="advanced-box">
+              <summary>⚙️ Cấu hình Endpoint nâng cao (nếu nhà cung cấp của bạn có đường dẫn khác)</summary>
+              <div class="form-grid cols-3" style="margin-top: 12px;">
+                <div class="field">
+                  <label>Đường dẫn tạo video (POST)</label>
+                  <input type="text" id="cfgMuseCreatePath" placeholder="/videos" />
+                </div>
+                <div class="field">
+                  <label>Đường dẫn kiểm tra tiến độ (GET)</label>
+                  <input type="text" id="cfgMuseStatusPath" placeholder="/videos/{id}" />
+                  <small class="hint">Dùng <code>{id}</code> cho vị trí task_id.</small>
+                </div>
+                <div class="field">
+                  <label>Kiểu định dạng Payload</label>
+                  <select id="cfgMusePayloadStyle">
+                    <option value="musevideos">MuseVideos (/videos: aspect_ratio, resolution)</option>
+                    <option value="muse_ai_pro">Muse AI Pro (/generate: aspect_ratio, image_urls)</option>
+                    <option value="openai_videos">OpenAI-style (/v1/videos: size, generate_audio)</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label>Auth Header</label>
+                  <input type="text" id="cfgMuseAuthHeader" placeholder="Authorization" />
+                </div>
+                <div class="field">
+                  <label>Auth Prefix</label>
+                  <input type="text" id="cfgMuseAuthPrefix" placeholder="Bearer " />
+                </div>
+                <div class="field">
+                  <label>Chu kỳ kiểm tra (giây) / Timeout (giây)</label>
+                  <div class="split-2">
+                    <input type="number" id="cfgMusePollSec" min="2" max="30" value="5" />
+                    <input type="number" id="cfgMuseMaxWaitSec" min="30" max="1200" value="420" />
+                  </div>
+                </div>
+              </div>
+              <div class="field" style="margin-top: 10px;">
+                <label>Tham số JSON bổ sung (Extra Payload JSON)</label>
+                <textarea id="cfgMuseExtraJson" rows="2" placeholder='{}'></textarea>
+              </div>
+              <label class="checkbox-row" style="margin-top: 8px;">
+                <input type="checkbox" id="cfgMuseGenAudio" />
+                <span>Yêu cầu Muse API tạo âm thanh gốc (<code>generate_audio: true</code>)</span>
+              </label>
+            </details>
+          </div>
+
+          <!-- 2. Aspect Ratio & Transitions -->
+          <div class="card settings-card">
+            <div class="card-head">
+              <div>
+                <h3>📐 2. Khung hình &amp; Chuyển cảnh</h3>
+                <p>Tự động căn khung 9:16, 16:9, 1:1 và ghép nhiều cảnh bằng hiệu ứng chuyển tiếp mượt.</p>
+              </div>
+            </div>
+
+            <div class="form-grid cols-2">
+              <div class="field">
+                <label>Tỷ lệ khung hình mặc định</label>
+                <select id="cfgAspectRatio">
+                  <option value="9:16">9:16 — 1080×1920 (TikTok / Shorts / Reels)</option>
+                  <option value="16:9">16:9 — 1920×1080 (YouTube Full HD)</option>
+                  <option value="1:1">1:1 — 1080×1080 (Vuông FB / IG)</option>
+                </select>
+              </div>
+
+              <div class="field">
+                <label>Cách xử lý video khác tỷ lệ</label>
+                <select id="cfgFitMode">
+                  <option value="crop">Lấp đầy khung hình (Smart Crop)</option>
+                  <option value="blur">Giữ nguyên toàn khung + Nền mờ thẩm mỹ</option>
+                </select>
+              </div>
+
+              <div class="field">
+                <label>Hiệu ứng chuyển cảnh (khi ghép nhiều cảnh/ảnh)</label>
+                <select id="cfgTransition">
+                  <option value="fade">Fade (Mờ dần mượt mà)</option>
+                  <option value="dissolve">Dissolve (Hòa tan)</option>
+                  <option value="smoothleft">Smooth Left (Trượt mềm sang trái)</option>
+                  <option value="smoothright">Smooth Right (Trượt mềm sang phải)</option>
+                  <option value="wipeleft">Wipe Left (Quét trái)</option>
+                  <option value="slideleft">Slide Left (Đẩy khung trái)</option>
+                  <option value="zoomin">Zoom In (Phóng to chuyển cảnh)</option>
+                  <option value="circleopen">Circle Open (Mở vòng tròn)</option>
+                  <option value="radial">Radial (Quét tròn)</option>
+                  <option value="fadeblack">Fade Black (Chuyển qua đen)</option>
+                </select>
+              </div>
+
+              <div class="field">
+                <label>Thời gian chuyển cảnh: <strong id="lblTransDur">0.5s</strong></label>
+                <input type="range" id="cfgTransDur" min="0.2" max="1.2" step="0.1" value="0.5" />
+              </div>
+
+              <div class="field">
+                <label>Số video xử lý song song</label>
+                <select id="cfgConcurrency">
+                  <option value="1">1 luồng (An toàn cho máy yếu / rate limit thấp)</option>
+                  <option value="2">2 luồng (Khuyên dùng)</option>
+                  <option value="3">3 luồng (Nhanh)</option>
+                  <option value="4">4 luồng (Rất nhanh)</option>
+                  <option value="5">5 luồng (Tối đa)</option>
+                </select>
+              </div>
+
+              <div class="field">
+                <label>Tự động thử lại khi lỗi mạng/API</label>
+                <select id="cfgRetries">
+                  <option value="0">Không thử lại</option>
+                  <option value="1">Thử lại 1 lần</option>
+                  <option value="2">Thử lại 2 lần</option>
+                  <option value="3">Thử lại 3 lần</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <!-- 3. Edge-TTS Vietnamese Voiceover -->
+          <div class="card settings-card">
+            <div class="card-head">
+              <div>
+                <h3>🎙️ 3. Giọng đọc AI tiếng Việt (Edge-TTS miễn phí)</h3>
+                <p>Tự động đọc kịch bản và trích xuất thời gian từng chữ để căn phụ đề chuẩn từng mili-giây.</p>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="cfgTtsEnabled" checked />
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="form-grid cols-2">
+              <div class="field span-2">
+                <label>Chọn giọng đọc Neural AI</label>
+                <select id="cfgTtsVoice"></select>
+              </div>
+
+              <div class="field">
+                <label>Tốc độ đọc: <strong id="lblTtsRate">+5%</strong></label>
+                <input type="range" id="cfgTtsRate" min="-25" max="45" step="5" value="5" />
+              </div>
+
+              <div class="field">
+                <label>Cao độ giọng: <strong id="lblTtsPitch">+0Hz</strong></label>
+                <input type="range" id="cfgTtsPitch" min="-15" max="15" step="1" value="0" />
+              </div>
+            </div>
+
+            <div class="tts-preview-bar">
+              <button class="btn btn-sm btn-secondary" id="btnPreviewTts">🔊 Nghe thử giọng đọc</button>
+              <audio id="ttsPreviewAudio" controls class="hidden"></audio>
+            </div>
+          </div>
+
+          <!-- 4. Auto Subtitles & Hook Banner -->
+          <div class="card settings-card span-2">
+            <div class="card-head">
+              <div>
+                <h3>💬 4. Phụ đề tự động kiểu TikTok / CapCut &amp; Tiêu đề Hook</h3>
+                <p>Tự động đốt phụ đề nổi bật từng từ đồng bộ 100% với giọng đọc AI.</p>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="cfgSubEnabled" checked />
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="sub-editor-layout">
+              <div class="form-grid cols-3">
+                <div class="field">
+                  <label>Phong cách phụ đề</label>
+                  <select id="cfgSubStyle">
+                    <option value="tiktok">TikTok Viral (Nổi bật + phóng nhẹ từ đang đọc)</option>
+                    <option value="capcut">CapCut Box (Khung nền tối + highlight chữ)</option>
+                    <option value="classic">Classic Cinematic (Chữ trắng viền đen sạch)</option>
+                  </select>
+                </div>
+
+                <div class="field">
+                  <label>Vị trí phụ đề</label>
+                  <select id="cfgSubPos">
+                    <option value="bottom">Phía dưới (An toàn nút TikTok)</option>
+                    <option value="center">Chính giữa khung hình</option>
+                    <option value="top">Phía trên</option>
+                  </select>
+                </div>
+
+                <div class="field">
+                  <label>Phông chữ (hỗ trợ đầy đủ tiếng Việt)</label>
+                  <select id="cfgSubFont">
+                    <option value="Arial">Arial Bold</option>
+                    <option value="Segoe UI">Segoe UI Bold</option>
+                    <option value="Tahoma">Tahoma Bold</option>
+                    <option value="Impact">Impact</option>
+                  </select>
+                </div>
+
+                <div class="field">
+                  <label>Cỡ chữ: <strong id="lblSubSize">64px</strong></label>
+                  <input type="range" id="cfgSubSize" min="36" max="96" step="2" value="64" />
+                </div>
+
+                <div class="field">
+                  <label>Số từ tối đa mỗi cụm</label>
+                  <select id="cfgSubWords">
+                    <option value="2">2 từ (Cực nhanh)</option>
+                    <option value="3">3 từ (Chuẩn TikTok)</option>
+                    <option value="4">4 từ (Cân bằng)</option>
+                    <option value="5">5 từ</option>
+                    <option value="6">6 từ</option>
+                  </select>
+                </div>
+
+                <div class="field">
+                  <label>Màu chữ / Màu nhấn / Viền</label>
+                  <div class="color-row">
+                    <input type="color" id="cfgSubPrimary" value="#ffffff" title="Màu chữ chính" />
+                    <input type="color" id="cfgSubHighlight" value="#ffe600" title="Màu từ đang đọc" />
+                    <input type="color" id="cfgSubOutline" value="#000000" title="Màu viền chữ" />
+                  </div>
+                </div>
+
+                <div class="field span-2">
+                  <label class="checkbox-row">
+                    <input type="checkbox" id="cfgShowHook" checked />
+                    <span>Hiện thanh tiêu đề Hook nổi bật ở đầu video</span>
+                  </label>
+                </div>
+
+                <div class="field">
+                  <label>Thời lượng hiện Hook (giây, 0 = cả video)</label>
+                  <input type="number" id="cfgHookDur" min="0" max="60" step="0.5" value="3.5" />
+                </div>
+              </div>
+
+              <!-- Live Subtitle Style Preview -->
+              <div class="sub-preview-stage" id="subPreviewStage">
+                <div class="preview-hook" id="previewHookBox">BÍ MẬT TĂNG GẤP ĐÔI NĂNG SUẤT</div>
+                <div class="preview-sub-wrap" id="previewSubWrap">
+                  <span class="preview-word">Tạo</span>
+                  <span class="preview-word active-word" id="previewActiveWord">video</span>
+                  <span class="preview-word">hàng</span>
+                  <span class="preview-word">loạt</span>
+                </div>
+                <span class="preview-caption">Xem trước phong cách phụ đề</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 5. Background Music & Audio Mixing -->
+          <div class="card settings-card">
+            <div class="card-head">
+              <div>
+                <h3>🎵 5. Nhạc nền tự động &amp; Âm lượng</h3>
+                <p>Nhạc nền tự động lặp vừa khít độ dài video, fade-in/out mượt và tự hạ nhỏ khi có giọng đọc.</p>
+              </div>
+            </div>
+
+            <div class="upload-zone" id="bgmUploadZone">
+              <div id="bgmFileInfo" class="upload-info">Chưa chọn file nhạc nền (.mp3 / .wav)</div>
+              <div class="upload-actions">
+                <label class="btn btn-sm btn-secondary file-btn">
+                  📤 Tải nhạc nền lên
+                  <input type="file" id="bgmFileInput" accept="audio/*" hidden />
+                </label>
+                <button class="btn btn-sm btn-ghost text-danger hidden" id="btnRemoveBgm">Xóa nhạc</button>
+              </div>
+              <audio id="bgmPlayer" controls class="hidden" style="width: 100%; margin-top: 8px;"></audio>
+            </div>
+
+            <div class="form-grid cols-2" style="margin-top: 12px;">
+              <div class="field">
+                <label>Âm lượng nhạc nền: <strong id="lblBgmVol">16%</strong></label>
+                <input type="range" id="cfgBgmVol" min="2" max="100" step="2" value="16" />
+              </div>
+              <div class="field">
+                <label>Âm lượng giọng đọc AI: <strong id="lblVoiceVol">100%</strong></label>
+                <input type="range" id="cfgVoiceVol" min="40" max="200" step="5" value="100" />
+              </div>
+            </div>
+
+            <label class="checkbox-row" style="margin-top: 8px;">
+              <input type="checkbox" id="cfgKeepOrigAudio" />
+              <span>Giữ âm thanh gốc từ video Muse (âm lượng <strong id="lblOrigVol">30%</strong>)</span>
+            </label>
+            <input type="range" id="cfgOrigVol" min="5" max="100" step="5" value="30" style="width: 100%; margin-top: 4px;" />
+          </div>
+
+          <!-- 6. Logo / Watermark -->
+          <div class="card settings-card">
+            <div class="card-head">
+              <div>
+                <h3>🏷️ 6. Logo / Watermark thương hiệu</h3>
+                <p>Tự động đóng dấu logo PNG trong suốt lên toàn bộ video xuất ra.</p>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="cfgWmEnabled" />
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="upload-zone">
+              <div class="wm-preview-row">
+                <img id="wmPreviewImg" class="wm-thumb hidden" alt="Logo preview" />
+                <div id="wmFileInfo" class="upload-info">Chưa chọn logo (.png / .webp)</div>
+              </div>
+              <div class="upload-actions">
+                <label class="btn btn-sm btn-secondary file-btn">
+                  📤 Tải logo PNG
+                  <input type="file" id="wmFileInput" accept="image/*" hidden />
+                </label>
+                <button class="btn btn-sm btn-ghost text-danger hidden" id="btnRemoveWm">Xóa logo</button>
+              </div>
+            </div>
+
+            <div class="form-grid cols-2" style="margin-top: 12px;">
+              <div class="field">
+                <label>Vị trí góc đóng dấu</label>
+                <select id="cfgWmPos">
+                  <option value="top-right">Góc Trên - Phải</option>
+                  <option value="top-left">Góc Trên - Trái</option>
+                  <option value="bottom-right">Góc Dưới - Phải</option>
+                  <option value="bottom-left">Góc Dưới - Trái</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>Khoảng cách lề (px)</label>
+                <input type="number" id="cfgWmMargin" min="8" max="180" value="32" />
+              </div>
+              <div class="field">
+                <label>Kích thước logo: <strong id="lblWmScale">16%</strong></label>
+                <input type="range" id="cfgWmScale" min="6" max="40" step="1" value="16" />
+              </div>
+              <div class="field">
+                <label>Độ rõ (Opacity): <strong id="lblWmOpacity">85%</strong></label>
+                <input type="range" id="cfgWmOpacity" min="15" max="100" step="5" value="85" />
+              </div>
+            </div>
+          </div>
+
+          <!-- 7. Optional AI Batch Script Generator Settings -->
+          <div class="card settings-card span-2">
+            <div class="card-head">
+              <div>
+                <h3>✨ 7. Cấu hình AI sinh kịch bản hàng loạt (Tùy chọn)</h3>
+                <p>Kết nối Meta Model API (<code>https://api.meta.ai/v1</code>) hoặc bất kỳ API chuẩn OpenAI nào để tự viết 5–30 prompt + lời thoại từ 1 chủ đề.</p>
+              </div>
+            </div>
+            <div class="form-grid cols-3">
+              <div class="field">
+                <label>Chat API Base URL</label>
+                <input type="text" id="cfgScriptBaseUrl" placeholder="https://api.meta.ai/v1" />
+              </div>
+              <div class="field">
+                <label>API Key (để trống sẽ dùng chung Muse Key) <span class="badge-inline" id="cfgScriptKeyBadge"></span></label>
+                <input type="password" id="cfgScriptApiKey" placeholder="Tùy chọn (mặc định dùng Muse API Key)" autocomplete="off" />
+              </div>
+              <div class="field">
+                <label>Model sinh kịch bản</label>
+                <input type="text" id="cfgScriptModel" placeholder="muse-wonder-1.0" />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="sticky-save-bar">
+          <div class="save-hint">Nhấn lưu để áp dụng cài đặt cho toàn bộ hàng đợi video.</div>
+          <button class="btn btn-primary btn-lg" id="btnSaveSettings">💾 Lưu toàn bộ cài đặt</button>
+        </div>
+      </section>
+
+      <!-- ==================== TAB 3: OUTPUT GALLERY ==================== -->
+      <section class="tab-panel" id="tab-gallery">
+        <div class="queue-header-bar">
+          <div>
+            <h3>🎬 Thư viện Video đã hoàn thành</h3>
+            <p class="text-muted" id="galleryFolderHint"></p>
+          </div>
+          <div class="queue-bulk-ops">
+            <button class="btn btn-primary" id="btnGalleryZip">📦 Tải tất cả (.ZIP)</button>
+            <button class="btn btn-secondary" id="btnGalleryOpenFolder">📁 Mở thư mục trên Windows</button>
+          </div>
+        </div>
+        <div id="galleryGrid" class="gallery-grid"></div>
+      </section>
+    </main>
+  </div>
+
+  <!-- ==================== MODALS ==================== -->
+
+  <!-- Add / Edit Single Video Modal -->
+  <div class="modal-backdrop hidden" id="jobModal">
+    <div class="modal">
+      <div class="modal-head">
+        <h3 id="jobModalTitle">Thêm video vào hàng đợi</h3>
+        <button class="icon-btn" data-close-modal="jobModal">✕</button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="editJobId" />
+        <div class="form-grid cols-2">
+          <div class="field">
+            <label>Tiêu đề video (tên file xuất)</label>
+            <input type="text" id="jobTitle" placeholder="vd: Mẹo học tiếng Anh siêu tốc" />
+          </div>
+          <div class="field">
+            <label>Thanh Hook tiêu đề nổi (hiện ở đầu video)</label>
+            <input type="text" id="jobHook" placeholder="vd: 3 PHÚT MỖI NGÀY ĐỂ GIỎI TIẾNG ANH" />
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Prompt hình ảnh cho Muse API <small class="hint">(Mẹo: dùng dấu <code>|</code> để tách nhiều cảnh và tự ghép chuyển cảnh!)</small></label>
+          <textarea id="jobPrompt" rows="3" placeholder="Cinematic shot of modern minimalist workspace at golden hour, warm light, 4k | Close-up hands typing on glowing laptop, shallow depth of field"></textarea>
+        </div>
+
+        <div class="field">
+          <label>Lời thoại / Kịch bản đọc AI &amp; Phụ đề tiếng Việt</label>
+          <textarea id="jobScript" rows="3" placeholder="Bạn không cần học ba tiếng mỗi ngày. Chỉ cần áp dụng quy tắc mười phút lặp lại này, não bộ sẽ ghi nhớ từ vựng tự nhiên như người bản xứ!"></textarea>
+        </div>
+
+        <div class="form-grid cols-3">
+          <div class="field">
+            <label>Nguồn video riêng (tùy chọn)</label>
+            <select id="jobSourceMode">
+              <option value="">Theo cài đặt chung</option>
+              <option value="muse">Muse AI API</option>
+              <option value="local_media">Ảnh/Clip cục bộ</option>
+              <option value="demo">Demo Render</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Tỷ lệ khung riêng</label>
+            <select id="jobAspectRatio">
+              <option value="">Theo cài đặt chung</option>
+              <option value="9:16">9:16 (Dọc)</option>
+              <option value="16:9">16:9 (Ngang)</option>
+              <option value="1:1">1:1 (Vuông)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Thời lượng (giây)</label>
+            <input type="number" id="jobDuration" min="3" max="60" placeholder="Mặc định" />
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Ảnh mẫu (Image-to-Video) hoặc danh sách Ảnh/Clip cục bộ</label>
+          <div class="media-attach-row">
+            <input type="text" id="jobRefImage" placeholder="Dán URL ảnh https://... hoặc tải file lên bên cạnh" />
+            <label class="btn btn-sm btn-secondary file-btn">
+              📎 Đính kèm Ảnh/Video
+              <input type="file" id="jobMediaInput" accept="image/*,video/*" multiple hidden />
+            </label>
+          </div>
+          <div id="jobMediaChips" class="chips-row"></div>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn btn-ghost" data-close-modal="jobModal">Hủy</button>
+        <button class="btn btn-primary" id="btnSaveJob">Lưu vào hàng đợi</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bulk Paste Modal -->
+  <div class="modal-backdrop hidden" id="bulkPasteModal">
+    <div class="modal">
+      <div class="modal-head">
+        <h3>📋 Dán nhanh danh sách tạo hàng loạt</h3>
+        <button class="icon-btn" data-close-modal="bulkPasteModal">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="hint" style="margin-bottom: 10px;">
+          Mỗi dòng là <strong>1 video</strong>. Hỗ trợ 2 kiểu nhập nhanh:<br />
+          • Đầy đủ: <code>Tiêu đề ;; Prompt hình ảnh Muse ;; Lời thoại tiếng Việt ;; Hook</code><br />
+          • Hoặc chỉ dán mỗi dòng 1 <code>Prompt hình ảnh</code> (tự đánh số Video 1, 2, 3...)
+        </p>
+        <textarea id="bulkPasteText" rows="10" placeholder="Cà phê sáng ;; Cinematic sunrise over Saigon coffee shop, warm golden steam ;; Một ly cà phê sữa đá buổi sáng đủ đánh thức cả ngày đầy năng lượng! ;; SÁNG SÀI GÒN&#10;Công nghệ AI ;; Futuristic neon studio hologram interface, smooth orbit ;; Công cụ tạo video hàng loạt giúp bạn sản xuất gấp mười lần mỗi ngày! ;; TƯƠNG LAI AI"></textarea>
+      </div>
+      <div class="modal-foot">
+        <button class="btn btn-ghost" data-close-modal="bulkPasteModal">Đóng</button>
+        <button class="btn btn-primary" id="btnSubmitBulkPaste">Thêm tất cả vào hàng đợi</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- AI Idea Generator Modal -->
+  <div class="modal-backdrop hidden" id="aiGenModal">
+    <div class="modal">
+      <div class="modal-head">
+        <h3>✨ AI tự động viết kịch bản &amp; prompt hàng loạt</h3>
+        <button class="icon-btn" data-close-modal="aiGenModal">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="hint" style="margin-bottom: 12px;">
+          Nhập 1 chủ đề, AI sẽ tự sinh hàng loạt dòng hoàn chỉnh gồm <em>Tiêu đề + Hook + Prompt tiếng Anh chuẩn điện ảnh + Lời thoại tiếng Việt</em> và đưa thẳng vào hàng đợi!
+        </p>
+        <div class="field">
+          <label>Chủ đề hàng loạt</label>
+          <input type="text" id="aiTopic" placeholder="vd: Mẹo tài chính cá nhân cho người trẻ, Sự thật thú vị về vũ trụ..." />
+        </div>
+        <div class="form-grid cols-2">
+          <div class="field">
+            <label>Số lượng video muốn tạo</label>
+            <input type="number" id="aiCount" min="1" max="30" value="5" />
+          </div>
+          <div class="field">
+            <label>Phong cách hình ảnh</label>
+            <input type="text" id="aiStyle" value="cinematic viral 4k dramatic lighting" />
+          </div>
+        </div>
+        <div id="aiGenError" class="alert alert-danger hidden"></div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn btn-ghost" data-close-modal="aiGenModal">Đóng</button>
+        <button class="btn btn-accent" id="btnRunAiGen">✨ Sinh kịch bản ngay</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Video Lightbox Player Modal -->
+  <div class="modal-backdrop hidden" id="playerModal">
+    <div class="modal modal-player">
+      <div class="modal-head">
+        <h3 id="playerTitle">Xem trước Video</h3>
+        <button class="icon-btn" data-close-modal="playerModal">✕</button>
+      </div>
+      <div class="modal-body player-body">
+        <video id="lightboxVideo" controls playsinline></video>
+      </div>
+      <div class="modal-foot">
+        <a class="btn btn-primary" id="playerDownloadLink" download>⬇ Tải video MP4</a>
+        <button class="btn btn-ghost" data-close-modal="playerModal">Đóng</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Job Logs Modal -->
+  <div class="modal-backdrop hidden" id="logsModal">
+    <div class="modal">
+      <div class="modal-head">
+        <h3 id="logsModalTitle">Nhật ký xử lý chi tiết</h3>
+        <button class="icon-btn" data-close-modal="logsModal">✕</button>
+      </div>
+      <div class="modal-body">
+        <pre id="logsContent" class="logs-pre"></pre>
+      </div>
+      <div class="modal-foot">
+        <button class="btn btn-ghost" data-close-modal="logsModal">Đóng</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notification Container -->
+  <div id="toastContainer" class="toast-container"></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -1,5 +1,7 @@
 node_modules/
 data/
+dist/
+musebatch-data/
 .env
 *.log
 .DS_Store

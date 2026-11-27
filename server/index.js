@@ -9,6 +9,7 @@ import XLSX from 'xlsx';
 import {
   FFMPEG_PATH,
   FFPROBE_PATH,
+  IS_SEA,
   MUSE_PRESETS,
   OUTPUTS_DIR,
   PREVIEWS_DIR,
@@ -16,6 +17,7 @@ import {
   TEMP_DIR,
   UPLOADS_DIR,
   VIETNAMESE_VOICES,
+  getSeaAssetText,
   loadSettings,
   sanitizeSettingsForClient,
   saveSettings
@@ -31,8 +33,18 @@ const queue = new BatchQueueManager();
 app.use(express.json({ limit: '25mb' }));
 app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 
-// Static assets & media previews
-app.use(express.static(path.join(ROOT_DIR, 'public')));
+// Static assets & media previews (serve embedded SEA assets when packaged into single EXE)
+if (IS_SEA) {
+  const indexHtml = getSeaAssetText('index.html');
+  const stylesCss = getSeaAssetText('styles.css');
+  const appJs = getSeaAssetText('app.js');
+  app.get('/', (_req, res) => res.type('text/html; charset=utf-8').send(indexHtml));
+  app.get('/index.html', (_req, res) => res.type('text/html; charset=utf-8').send(indexHtml));
+  app.get('/styles.css', (_req, res) => res.type('text/css; charset=utf-8').send(stylesCss));
+  app.get('/app.js', (_req, res) => res.type('application/javascript; charset=utf-8').send(appJs));
+} else {
+  app.use(express.static(path.join(ROOT_DIR, 'public')));
+}
 app.use('/outputs', express.static(OUTPUTS_DIR));
 app.use('/uploads', express.static(UPLOADS_DIR));
 app.use('/previews', express.static(PREVIEWS_DIR, { etag: false, maxAge: 0 }));
@@ -409,11 +421,36 @@ app.get('/api/health', (_req, res) => {
   res.json({ ok: true, ffmpeg: FFMPEG_PATH, ffprobe: FFPROBE_PATH });
 });
 
-app.listen(PORT, '127.0.0.1', () => {
+function openBrowserUrl(url) {
+  try {
+    spawn('cmd.exe', ['/c', 'start', '', url], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+  } catch {
+    // ignore if headless
+  }
+}
+
+const server = app.listen(PORT, '127.0.0.1', () => {
+  const url = `http://localhost:${PORT}`;
   console.log(`\n================================================`);
   console.log(`  MuseBatch Studio đang chạy tại:`);
-  console.log(`  http://localhost:${PORT}`);
+  console.log(`  ${url}`);
+  console.log(`  Chế độ: ${IS_SEA ? 'Standalone EXE (1 file duy nhất)' : 'Node.js Dev'}`);
   console.log(`  FFmpeg: ${FFMPEG_PATH}`);
   console.log(`  Output: ${OUTPUTS_DIR}`);
   console.log(`================================================\n`);
+  if (IS_SEA && !process.env.NO_OPEN_BROWSER) {
+    openBrowserUrl(url);
+  }
+});
+
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    const url = `http://localhost:${PORT}`;
+    console.log(`\nMuseBatch Studio đã đang chạy sẵn tại ${url} — đang mở lại trình duyệt...`);
+    if (!process.env.NO_OPEN_BROWSER) openBrowserUrl(url);
+    setTimeout(() => process.exit(0), 1200);
+  } else {
+    console.error('Lỗi khởi động server:', err.message);
+    process.exit(1);
+  }
 });

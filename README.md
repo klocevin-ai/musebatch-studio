@@ -3,11 +3,18 @@
 Ứng dụng Web chạy cục bộ trên Windows giúp bạn sản xuất video ngắn & video dài **hàng loạt** kết hợp **Muse API**, **Giọng đọc AI tiếng Việt miễn phí (Edge-TTS)**, **Phụ đề tự động kiểu TikTok/CapCut**, **Nhạc nền**, **Logo/Watermark**, và **Hiệu ứng chuyển cảnh FFmpeg**.
 
 ## Khởi chạy nhanh
-- **Cách 1 (Dễ nhất):** Bấm đúp vào file `start.bat` — trình duyệt sẽ tự mở tại `http://localhost:3456`.
-- **Cách 2 (Dòng lệnh):**
+- **Cách 1 (1 file `.exe` duy nhất):** Chạy `dist/MuseBatchStudio.exe` (tự tạo bằng `npm run build:exe`) — bấm đúp là chạy độc lập không cần `node_modules` hay thư mục `public/`, tự mở trình duyệt tại `http://localhost:3456` và tự lưu dữ liệu vào `musebatch-data/` cạnh file `.exe`.
+- **Cách 2 (Mã nguồn):** Bấm đúp vào file `start.bat` hoặc chạy:
   ```cmd
+  npm install
   npm start
   ```
+
+## Tự đóng gói lại thành 1 file `.exe` (Node.js 26+)
+```cmd
+npm run build:exe
+```
+File xuất ra: `dist/MuseBatchStudio.exe` (tích hợp sẵn toàn bộ backend, thư viện và giao diện web).
 
 ## Quy trình tạo video hàng loạt (3 bước)
 1. **Cấu hình Muse API Key:** Mở tab **Cài đặt API & Hậu kỳ**, chọn nền tảng Muse API của bạn (MuseVideos `musevideos.io`, Muse AI `muse-ai.pro`, Gateway `/v1/videos` như APIMart/APIMODELS/LaoZhang, hoặc Custom REST), dán API Key và bấm **Kiểm tra kết nối**.

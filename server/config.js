@@ -2,12 +2,29 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import sea from 'node:sea';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+let runningAsSea = false;
+try {
+  runningAsSea = typeof sea?.isSea === 'function' && sea.isSea();
+} catch {
+  runningAsSea = false;
+}
 
-export const ROOT_DIR = path.resolve(__dirname, '..');
-export const DATA_DIR = path.join(ROOT_DIR, 'data');
+export const IS_SEA = runningAsSea;
+
+export function getSeaAssetText(key) {
+  if (!IS_SEA) return null;
+  return sea.getAsset(key, 'utf8');
+}
+
+const currentDir =
+  typeof __dirname !== 'undefined'
+    ? __dirname
+    : path.dirname(fileURLToPath(import.meta.url));
+
+export const ROOT_DIR = IS_SEA ? path.dirname(process.execPath) : path.resolve(currentDir, '..');
+export const DATA_DIR = IS_SEA ? path.join(ROOT_DIR, 'musebatch-data') : path.join(ROOT_DIR, 'data');
 export const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
 export const OUTPUTS_DIR = path.join(DATA_DIR, 'outputs');
 export const PREVIEWS_DIR = path.join(DATA_DIR, 'previews');
@@ -20,6 +37,11 @@ for (const dir of [DATA_DIR, UPLOADS_DIR, OUTPUTS_DIR, PREVIEWS_DIR, TEMP_DIR]) 
 }
 
 function findBinary(name) {
+  // 1. Check alongside the executable / project root first (portable mode)
+  const localCandidate = path.join(ROOT_DIR, `${name}.exe`);
+  if (fs.existsSync(localCandidate)) return localCandidate;
+
+  // 2. Check system PATH
   try {
     const out = execSync(`where ${name}`, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
     const first = out.split(/\r?\n/)[0]?.trim();
